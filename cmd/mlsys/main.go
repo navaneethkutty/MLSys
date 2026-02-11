@@ -44,9 +44,6 @@ func main() {
 	}
 
 	solution := buildBaselineSolution(problem)
-	if err := validateSolution(problem, solution); err != nil {
-		fatal(err.Error())
-	}
 	if err := writeSolution(outPath, solution); err != nil {
 		fatal(err.Error())
 	}
@@ -100,128 +97,30 @@ func validateProblem(p InputProblem) error {
 }
 
 func buildBaselineSolution(p InputProblem) OutputSolution {
-	groups := chooseGroupsByDP(p, 4)
+	nOps := len(p.OpTypes)
 	s := OutputSolution{
-		Subgraphs:         make([][]int, 0, len(groups)),
-		Granularities:     make([][3]int64, 0, len(groups)),
-		TensorsToRetain:   make([][]int, 0, len(groups)),
-		TraversalOrders:   make([]*[]int64, 0, len(groups)),
-		SubgraphLatencies: make([]float64, 0, len(groups)),
+		Subgraphs:         make([][]int, 0, nOps),
+		Granularities:     make([][3]int64, 0, nOps),
+		TensorsToRetain:   make([][]int, 0, nOps),
+		TraversalOrders:   make([]*[]int64, 0, nOps),
+		SubgraphLatencies: make([]float64, 0, nOps),
 	}
 
-	for i, group := range groups {
-		g := chooseGranularityForGroup(p, group)
-		lat := estimateSubgraphLatencyForGroup(p, group, g)
-		retain := chooseRetainedTensors(p, groups, i)
+	for op := 0; op < nOps; op++ {
+		g := chooseGranularityForOp(p, op)
+		lat := estimateSubgraphLatencySingleOp(p, op, g)
 
-		s.Subgraphs = append(s.Subgraphs, group)
+		s.Subgraphs = append(s.Subgraphs, []int{op})
 		s.Granularities = append(s.Granularities, g)
-		s.TensorsToRetain = append(s.TensorsToRetain, retain)
+		s.TensorsToRetain = append(s.TensorsToRetain, []int{})
 		s.TraversalOrders = append(s.TraversalOrders, nil)
 		s.SubgraphLatencies = append(s.SubgraphLatencies, lat)
 	}
 	return s
 }
 
-func chooseRetainedTensors(p InputProblem, groups [][]int, idx int) []int {
-	if idx < 0 || idx >= len(groups)-1 {
-		return []int{}
-	}
-	current := groups[idx]
-	next := groups[idx+1]
-	if len(current) == 0 || len(next) == 0 {
-		return []int{}
-	}
-
-	nextInputs := make(map[int]bool)
-	for _, op := range next {
-		for _, t := range p.Inputs[op] {
-			nextInputs[t] = true
-		}
-	}
-
-	retain := make([]int, 0)
-	seen := make(map[int]bool)
-	for _, op := range current {
-		for _, t := range p.Outputs[op] {
-			if nextInputs[t] && !seen[t] {
-				retain = append(retain, t)
-				seen[t] = true
-			}
-		}
-	}
-	return retain
-}
-
-func chooseGroupsByDP(p InputProblem, maxGroupSize int) [][]int {
-	n := len(p.OpTypes)
-	dp := make([]float64, n+1)
-	prev := make([]int, n+1)
-	for i := range dp {
-		dp[i] = math.Inf(1)
-		prev[i] = -1
-	}
-	dp[0] = 0
-
-	for end := 1; end <= n; end++ {
-		for size := 1; size <= maxGroupSize; size++ {
-			start := end - size
-			if start < 0 {
-				break
-			}
-			group := makeContiguousOps(start, end)
-			g := chooseGranularityForGroup(p, group)
-			cost := estimateSubgraphLatencyForGroup(p, group, g)
-			if dp[start]+cost < dp[end] {
-				dp[end] = dp[start] + cost
-				prev[end] = start
-			}
-		}
-	}
-
-	if prev[n] == -1 {
-		groups := make([][]int, 0, n)
-		for op := 0; op < n; op++ {
-			groups = append(groups, []int{op})
-		}
-		return groups
-	}
-
-	reversed := make([][]int, 0)
-	for at := n; at > 0; at = prev[at] {
-		start := prev[at]
-		if start < 0 {
-			break
-		}
-		reversed = append(reversed, makeContiguousOps(start, at))
-	}
-
-	groups := make([][]int, 0, len(reversed))
-	for i := len(reversed) - 1; i >= 0; i-- {
-		groups = append(groups, reversed[i])
-	}
-	return groups
-}
-
-func makeContiguousOps(start, end int) []int {
-	group := make([]int, 0, end-start)
-	for op := start; op < end; op++ {
-		group = append(group, op)
-	}
-	return group
-}
-
-func chooseGranularityForGroup(p InputProblem, ops []int) [3]int64 {
-	if len(ops) == 0 {
-		return [3]int64{1, 1, 1}
-	}
-	outTensor := p.Outputs[ops[0]][0]
-	for _, op := range ops {
-		t := p.Outputs[op][0]
-		if p.Widths[t]*p.Heights[t] > p.Widths[outTensor]*p.Heights[outTensor] {
-			outTensor = t
-		}
-	}
+func chooseGranularityForOp(p InputProblem, op int) [3]int64 {
+	outTensor := p.Outputs[op][0]
 	maxW := minI64(p.NativeGranularity[0], p.Widths[outTensor])
 	maxH := minI64(p.NativeGranularity[1], p.Heights[outTensor])
 	if maxW < 1 {
@@ -239,16 +138,14 @@ func chooseGranularityForGroup(p InputProblem, ops []int) [3]int64 {
 	for _, w := range candidatesW {
 		for _, h := range candidatesH {
 			k := int64(1)
-			for _, op := range ops {
-				if isMatMul(p.OpTypes[op]) && len(p.Inputs[op]) > 0 {
-					lhs := p.Inputs[op][0]
-					reduction := p.Widths[lhs]
-					if reduction > 0 {
-						k = maxI64(k, minI64(reduction, 16))
-					}
+			if isMatMul(p.OpTypes[op]) && len(p.Inputs[op]) > 0 {
+				lhs := p.Inputs[op][0]
+				reduction := p.Widths[lhs]
+				if reduction > 0 {
+					k = minI64(reduction, 16)
 				}
 			}
-			if fitsFastMemoryGroup(p, ops, w, h, k) {
+			if fitsFastMemory(p, op, w, h, k) {
 				area := w * h
 				if area > bestArea {
 					bestArea = area
@@ -258,123 +155,6 @@ func chooseGranularityForGroup(p InputProblem, ops []int) [3]int64 {
 		}
 	}
 	return best
-}
-
-func estimateSubgraphLatencyForGroup(p InputProblem, ops []int, g [3]int64) float64 {
-	if len(ops) == 0 {
-		return 0
-	}
-	w, h, k := g[0], g[1], g[2]
-	outTensor := p.Outputs[ops[len(ops)-1]][0]
-	tilesW := ceilDiv(p.Widths[outTensor], w)
-	tilesH := ceilDiv(p.Heights[outTensor], h)
-	splitK := int64(1)
-	for _, op := range ops {
-		if isMatMul(p.OpTypes[op]) && len(p.Inputs[op]) > 0 {
-			lhs := p.Inputs[op][0]
-			reduction := p.Widths[lhs]
-			splitK = maxI64(splitK, ceilDiv(reduction, maxI64(1, k)))
-		}
-	}
-	nSteps := maxI64(1, tilesW*tilesH*splitK)
-
-	computePerStep := 0.0
-	for _, op := range ops {
-		computePerStep += p.BaseCosts[op]
-	}
-	memPerStep := float64(workingSetElementsForGroup(p, ops, w, h, k)) / p.SlowMemoryBandwidth
-	stepLatency := math.Max(computePerStep, memPerStep)
-	return float64(nSteps) * stepLatency
-}
-
-func validateSolution(p InputProblem, s OutputSolution) error {
-	n := len(s.Subgraphs)
-	if n == 0 {
-		return errors.New("solution has no subgraphs")
-	}
-	if len(s.Granularities) != n || len(s.TensorsToRetain) != n || len(s.TraversalOrders) != n || len(s.SubgraphLatencies) != n {
-		return errors.New("solution parallel list length mismatch")
-	}
-
-	covered := make([]int, len(p.OpTypes))
-	for i := 0; i < n; i++ {
-		if len(s.Subgraphs[i]) == 0 {
-			return fmt.Errorf("subgraph %d has no ops", i)
-		}
-		g := s.Granularities[i]
-		if g[0] <= 0 || g[1] <= 0 || g[2] <= 0 {
-			return fmt.Errorf("subgraph %d has invalid granularity", i)
-		}
-		if s.SubgraphLatencies[i] < 0 {
-			return fmt.Errorf("subgraph %d has negative latency", i)
-		}
-
-		for _, op := range s.Subgraphs[i] {
-			if op < 0 || op >= len(p.OpTypes) {
-				return fmt.Errorf("subgraph %d references invalid op index %d", i, op)
-			}
-			covered[op]++
-		}
-		if !fitsFastMemoryGroup(p, s.Subgraphs[i], g[0], g[1], g[2]) {
-			return fmt.Errorf("subgraph %d violates fast memory capacity", i)
-		}
-
-		for _, t := range s.TensorsToRetain[i] {
-			if t < 0 || t >= len(p.Widths) {
-				return fmt.Errorf("subgraph %d retains invalid tensor %d", i, t)
-			}
-		}
-	}
-
-	for op, c := range covered {
-		if c != 1 {
-			return fmt.Errorf("operation %d must be scheduled exactly once (found %d)", op, c)
-		}
-	}
-	return nil
-}
-
-func fitsFastMemoryGroup(p InputProblem, ops []int, w, h, k int64) bool {
-	required := workingSetElementsForGroup(p, ops, w, h, k)
-	return float64(required) <= p.FastMemoryCapacity
-}
-
-func workingSetElementsForGroup(p InputProblem, ops []int, w, h, k int64) int64 {
-	if len(ops) == 0 {
-		return 0
-	}
-	internalOutputs := make(map[int]bool)
-	for _, op := range ops {
-		for _, t := range p.Outputs[op] {
-			internalOutputs[t] = true
-		}
-	}
-
-	var boundaryIn int64
-	for _, op := range ops {
-		if isMatMul(p.OpTypes[op]) {
-			if len(p.Inputs[op]) > 0 {
-				if !internalOutputs[p.Inputs[op][0]] {
-					boundaryIn += h * maxI64(1, k)
-				}
-			}
-			if len(p.Inputs[op]) > 1 {
-				if !internalOutputs[p.Inputs[op][1]] {
-					boundaryIn += w * maxI64(1, k)
-				}
-			}
-			continue
-		}
-		for _, t := range p.Inputs[op] {
-			if !internalOutputs[t] {
-				boundaryIn += w * h
-			}
-		}
-	}
-
-	lastOp := ops[len(ops)-1]
-	boundaryOut := w * h * maxI64(1, int64(len(p.Outputs[lastOp])))
-	return boundaryIn + boundaryOut
 }
 
 func fitsFastMemory(p InputProblem, op int, w, h, k int64) bool {
@@ -392,6 +172,27 @@ func workingSetElementsForOp(p InputProblem, op int, w, h, k int64) int64 {
 	in := w * h * maxI64(1, int64(len(p.Inputs[op])))
 	out := w * h * maxI64(1, int64(len(p.Outputs[op])))
 	return in + out
+}
+
+func estimateSubgraphLatencySingleOp(p InputProblem, op int, g [3]int64) float64 {
+	w, h, k := g[0], g[1], g[2]
+	outTensor := p.Outputs[op][0]
+	outW := p.Widths[outTensor]
+	outH := p.Heights[outTensor]
+	tilesW := ceilDiv(outW, w)
+	tilesH := ceilDiv(outH, h)
+	splitK := int64(1)
+	if isMatMul(p.OpTypes[op]) && len(p.Inputs[op]) > 0 {
+		lhs := p.Inputs[op][0]
+		reduction := p.Widths[lhs]
+		splitK = ceilDiv(reduction, maxI64(1, k))
+	}
+	nSteps := maxI64(1, tilesW*tilesH*splitK)
+
+	computePerStep := p.BaseCosts[op]
+	memPerStep := float64(workingSetElementsForOp(p, op, w, h, k)) / p.SlowMemoryBandwidth
+	stepLatency := math.Max(computePerStep, memPerStep)
+	return float64(nSteps) * stepLatency
 }
 
 func writeSolution(path string, s OutputSolution) error {
