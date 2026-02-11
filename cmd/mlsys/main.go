@@ -44,9 +44,19 @@ func main() {
 	}
 
 	solution := buildBaselineSolution(problem)
+	logSolutionLatency(solution)
 	if err := writeSolution(outPath, solution); err != nil {
 		fatal(err.Error())
 	}
+}
+
+func logSolutionLatency(s OutputSolution) {
+	total := 0.0
+	for i, lat := range s.SubgraphLatencies {
+		total += lat
+		fmt.Fprintf(os.Stderr, "latency: subgraph=%d estimated_latency=%.4f\n", i, lat)
+	}
+	fmt.Fprintf(os.Stderr, "latency: total_estimated_latency=%.4f subgraphs=%d\n", total, len(s.SubgraphLatencies))
 }
 
 func readProblem(path string) (InputProblem, error) {
