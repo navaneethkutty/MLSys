@@ -1,0 +1,8 @@
+# Go build artifacts
+/mlsys
+*.test
+*.out
+
+# Common temp output files used during local runs
+/tmp/out.json
+/tmp/out2.json
