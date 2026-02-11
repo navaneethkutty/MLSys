@@ -314,9 +314,9 @@ func validateSolution(p InputProblem, s OutputSolution) error {
 				return fmt.Errorf("subgraph %d references invalid op index %d", i, op)
 			}
 			covered[op]++
-			if !fitsFastMemory(p, op, g[0], g[1], g[2]) {
-				return fmt.Errorf("subgraph %d op %d violates fast memory capacity", i, op)
-			}
+		}
+		if !fitsFastMemoryGroup(p, s.Subgraphs[i], g[0], g[1], g[2]) {
+			return fmt.Errorf("subgraph %d violates fast memory capacity", i)
 		}
 
 		for _, t := range s.TensorsToRetain[i] {
@@ -327,8 +327,8 @@ func validateSolution(p InputProblem, s OutputSolution) error {
 	}
 
 	for op, c := range covered {
-		if c == 0 {
-			return fmt.Errorf("operation %d is not covered by solution", op)
+		if c != 1 {
+			return fmt.Errorf("operation %d must be scheduled exactly once (found %d)", op, c)
 		}
 	}
 	return nil

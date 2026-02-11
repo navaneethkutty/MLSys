@@ -8,7 +8,7 @@ go run ./cmd/mlsys <path_to_input.json> <path_to_output.json>
 
 The starter:
 - Parses the contest input JSON schema.
-- Emits a valid-looking schedule JSON with one op per subgraph.
+- Emits a valid-looking schedule JSON with contiguous grouped subgraphs chosen by a small DP pass.
 - Picks a granularity per op via a simple memory-fit heuristic.
 - Uses immediate-next-use `tensors_to_retain` heuristics and `null` traversal orders.
 
